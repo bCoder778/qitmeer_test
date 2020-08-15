@@ -1,0 +1,30 @@
+[email]
+user=""
+pass=""
+host="smtp.qq.com"
+port="25"
+to=[
+""
+]
+
+[log]
+# mode:console 12 or file 11
+mode=12
+level=0
+
+[releasenode]
+host="https://127.0.0.1:1234"
+user="admin"
+pass="123"
+
+[testnode]
+host="https://127.0.0.1:1234"
+user="admin"
+pass="123"
+
+[check]
+order=10
+
+[task]
+start="2020-08-15 16:16:30"
+interval=86400
