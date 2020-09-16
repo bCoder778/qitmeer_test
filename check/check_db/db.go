@@ -56,16 +56,64 @@ func (c *CheckDB) WrongList() []Wrong {
 	return wrongs
 }
 
-func (c *CheckDB) GetAmount(txId string, index uint64) (uint64, error) {
+func (c *CheckDB) GetUTXO(txId string, index uint64) (*UTXO, error) {
 	bytes, err := c.base.GetFromBucket(tx_bucket, []byte(getOutKey(txId, index)))
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return encode.BytesToUint64(bytes), nil
+	var utxo *UTXO
+	err = json.Unmarshal(bytes, &utxo)
+	if err != nil {
+		return nil, err
+	}
+	return utxo, nil
 }
 
-func (c *CheckDB) SaveAmount(txId string, index int, amount uint64) error {
-	return c.base.PutInBucket(tx_bucket, []byte(getOutKey(txId, index)), encode.Uint64ToBytes(amount))
+func (c *CheckDB) SaveUTXO(txId string, index uint64, uxto *UTXO) error {
+	bytes, err := json.Marshal(uxto)
+	if err != nil {
+		return err
+	}
+	return c.base.PutInBucket(tx_bucket, []byte(getOutKey(txId, index)), bytes)
+}
+
+func (c *CheckDB) UpdateUTXO(txId string, index uint64, spent string) error {
+	uxto, err := c.GetUTXO(txId, index)
+	if err != nil {
+		return err
+	}
+	uxto.Spent = spent
+	err = c.SaveUTXO(txId, index, uxto)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *CheckDB) SumUTXO() (uint64, error) {
+	var sum uint64
+	iter := c.base.Iter(tx_bucket)
+	defer iter.Release()
+
+	// Iter will affect RLP decoding and reallocate memory to value
+	for iter.Next() {
+		value := make([]byte, len(iter.Value()))
+		copy(value, iter.Value())
+		var utxo *UTXO
+		err := json.Unmarshal(value, &utxo)
+		if err != nil {
+			return 0, err
+		}
+		if utxo.Spent == "" {
+			sum += utxo.Amount
+		}
+	}
+	return sum, nil
+}
+
+type UTXO struct {
+	Amount uint64
+	Spent  string
 }
 
 type Wrong struct {

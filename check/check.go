@@ -21,6 +21,10 @@ type Check struct {
 	testVer       string
 	curBlock      uint64
 	start         int64
+	ReleaseCount  uint64
+	TestCount     uint64
+	ReleaseUtxo   uint64
+	TestUtxo      uint64
 }
 
 func New(releaseVer, testVer string) (*Check, error) {
@@ -44,6 +48,13 @@ func New(releaseVer, testVer string) (*Check, error) {
 }
 
 func (c *Check) CheckNode(releaseBlocks chan *rpc.Block, testBlocks chan *rpc.Block) {
+
+	defer func() {
+		if err := c.VerifyAccount(); err != nil {
+			log.Mail(fmt.Sprintf("Verify account failed, %s", err.Error()))
+			c.errs = append(c.errs, err)
+		}
+	}()
 	for {
 		select {
 		case _, _ = <-c.stop:
@@ -61,18 +72,20 @@ func (c *Check) CheckNode(releaseBlocks chan *rpc.Block, testBlocks chan *rpc.Bl
 				log.Mail(fmt.Sprintf("Order %d verification of consistency failed", reBlock.Order), err.Error())
 				c.errs = append(c.errs, err)
 			}
+			c.ReleaseCount++
 			if err := c.VerifyFees(reBlock, tsBlock); err != nil {
 				log.Mail(fmt.Sprintf("Order %d verification of fees failed", reBlock.Order), err.Error())
 				c.errs = append(c.errs, err)
 			}
+			c.TestCount++
 			c.curBlock = reBlock.Order
 		}
 	}
 }
 
 func (c *Check) SendReport() string {
-	rs := fmt.Sprintf("Test relase=%s, test=%s use=%ds, verify block %d and find %d errors.\n\n\n",
-		c.releaseVer, c.testVer, time.Now().Unix()-c.start, c.curBlock, len(c.errs))
+	rs := fmt.Sprintf("Test relase=%s, test=%s use=%ds, blockcount=%d, release-utxo=%d, test-utxo=%d, verify block %d and find %d errors.\n\n\n",
+		c.releaseVer, c.testVer, time.Now().Unix()-c.start, c.ReleaseCount, c.ReleaseUtxo, c.TestUtxo, c.curBlock, len(c.errs))
 	for _, err := range c.errs {
 		rs += err.Error() + "\n"
 	}
@@ -117,6 +130,36 @@ func (c *Check) VerifyFees(releaseBlock, testBlock *rpc.Block) error {
 	return nil
 }
 
+func (c *Check) Verify(releaseBlock, testBlock *rpc.Block) error {
+	if err := c.releaseVerify.verify(releaseBlock); err != nil {
+		return fmt.Errorf("release %s %s", c.releaseVer, err.Error())
+	}
+	if err := c.testVerify.verify(testBlock); err != nil {
+		return fmt.Errorf("test %s %s", c.testVer, err.Error())
+	}
+	return nil
+}
+
+func (c *Check) VerifyAccount() error {
+	var err error
+	c.TestUtxo, err = c.testVerify.SumUTXO()
+	if err != nil {
+		return fmt.Errorf("test %s sum utxo failed, %s", c.testVer, err.Error())
+	}
+	c.ReleaseUtxo, err = c.releaseVerify.SumUTXO()
+	if err != nil {
+		return fmt.Errorf("relesase %s sum utxo failed, %s", c.releaseVer, err.Error())
+	}
+	correct := (c.TestCount-1)*12000000000 + 6524293004366634
+	if c.TestUtxo != correct {
+		return fmt.Errorf("test %s sum utxo=%d,blockcount=%d,correct=correct", c.testVer, c.TestUtxo, c.TestCount)
+	}
+	if c.ReleaseUtxo != correct {
+		return fmt.Errorf("release %s sum utxo=%d,blockcount=%d,correct=correct", c.releaseVer, c.ReleaseUtxo, c.ReleaseCount)
+	}
+	return nil
+}
+
 type FeesVerify struct {
 	db *check_db.CheckDB
 }
@@ -147,6 +190,10 @@ func (f *FeesVerify) checkBlockFee(b *rpc.Block) (bool, error) {
 	err := f.saveVouts(b)
 	if err != nil {
 		return false, fmt.Errorf("save utxo failed! %s.", err.Error())
+	}
+	err = f.updateVouts(b)
+	if err != nil {
+		return false, fmt.Errorf("update utxo failed! %s.", err.Error())
 	}
 
 	if b.Order == 0 && b.Id == 0 {
@@ -179,24 +226,45 @@ func (f *FeesVerify) checkBlockFee(b *rpc.Block) (bool, error) {
 func (f *FeesVerify) sumVin(vins []rpc.Vin) (uint64, error) {
 	var sum uint64
 	for _, vin := range vins {
-		amount, err := f.db.GetAmount(vin.Txid, vin.Vout)
+		amount, err := f.db.GetUTXO(vin.Txid, vin.Vout)
 		if err != nil {
 			return 0, fmt.Errorf("%s:%d %s.", vin.Txid, vin.Vout, err.Error())
 		}
-		sum += amount
+		sum += amount.Amount
 	}
 	return sum, nil
 }
 
 func (f *FeesVerify) saveVouts(b *rpc.Block) error {
 	for _, tx := range b.Transactions {
-		for index, vout := range tx.Vout {
-			if err := f.db.SaveAmount(tx.Txid, index, vout.Amount); err != nil {
-				return err
+		if !tx.Duplicate {
+			for index, vout := range tx.Vout {
+				if err := f.db.SaveUTXO(tx.Txid, uint64(index), &check_db.UTXO{Amount: vout.Amount}); err != nil {
+					return err
+				}
 			}
 		}
 	}
 	return nil
+}
+
+func (f *FeesVerify) updateVouts(b *rpc.Block) error {
+	for _, tx := range b.Transactions {
+		if !tx.Duplicate {
+			for _, vin := range tx.Vin {
+				if vin.Txid != "" {
+					if err := f.db.UpdateUTXO(vin.Txid, vin.Vout, tx.Txid); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (f *FeesVerify) SumUTXO() (uint64, error) {
+	return f.db.SumUTXO()
 }
 
 func (f *FeesVerify) Close() {

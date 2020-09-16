@@ -29,7 +29,6 @@ func TestQitmeer() {
 	if order == 0 {
 		order = Release.BlockCount()
 	}
-
 	reBlocks := Release.Sync(order)
 	tsBlocks := Test.Sync(order)
 

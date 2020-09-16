@@ -23,9 +23,7 @@ func (n *Node) Sync(lastOrder uint64) chan *rpc.Block {
 	var start uint64
 	go func() {
 		for start <= lastOrder {
-			if start%2000 == 0 {
-				log.Mail(fmt.Sprintf("Test qitmeer progress %.2f%", start*100/lastOrder))
-			}
+
 			block, ok := n.client.GetBlock(start)
 			if !ok {
 				time.Sleep(time.Second * 10)
@@ -35,6 +33,9 @@ func (n *Node) Sync(lastOrder uint64) chan *rpc.Block {
 					if err != nil {
 						time.Sleep(time.Second * 10)
 					} else {
+						if start%(lastOrder/10) == 0 {
+							log.Mail(fmt.Sprintf("Test %s qitmeer progress %.2f %%", n.version, float64(start*100)/float64(lastOrder)))
+						}
 						block.IsBlue = color
 						blocks <- block
 						start++
